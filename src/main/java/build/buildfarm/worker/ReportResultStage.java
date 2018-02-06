@@ -17,6 +17,7 @@ package build.buildfarm.worker;
 import build.buildfarm.common.DigestUtil;
 import build.buildfarm.instance.Instance;
 import build.buildfarm.v1test.CASInsertionPolicy;
+import build.buildfarm.v1test.CompletedOperationMetadata;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
@@ -33,7 +34,9 @@ import com.google.devtools.remoteexecution.v1test.Tree;
 import com.google.longrunning.Operation;
 import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.Duration;
 import com.google.protobuf.InvalidProtocolBufferException;
+import com.google.protobuf.util.Durations;
 import io.grpc.StatusException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -53,7 +56,7 @@ public class ReportResultStage extends PipelineStage {
 
   public static class NullStage extends PipelineStage {
     public NullStage() {
-      super(null, null, null);
+      super(null, null, null, null);
     }
 
     @Override
@@ -75,7 +78,7 @@ public class ReportResultStage extends PipelineStage {
   }
 
   public ReportResultStage(WorkerContext workerContext, PipelineStage error) {
-    super(workerContext, new NullStage(), error);
+    super("ReportResultStage", workerContext, new NullStage(), error);
     queue = new ArrayBlockingQueue<>(1);
   }
 
@@ -152,14 +155,14 @@ public class ReportResultStage extends PipelineStage {
   @VisibleForTesting
   public void uploadOutputs(
       ActionResult.Builder resultBuilder,
-      Path root,
+      Path actionRoot,
       Iterable<String> outputFiles,
       Iterable<String> outputDirs)
       throws IOException, StatusException, InterruptedException {
     int inlineContentBytes = 0;
     ImmutableList.Builder<ByteString> contents = new ImmutableList.Builder<>();
     for (String outputFile : outputFiles) {
-      Path outputPath = root.resolve(outputFile);
+      Path outputPath = actionRoot.resolve(outputFile);
       if (!Files.exists(outputPath)) {
         continue;
       }
@@ -174,13 +177,12 @@ public class ReportResultStage extends PipelineStage {
       // cause an internal deadlock
 
       ByteString content;
-      try {
-        InputStream inputStream = Files.newInputStream(outputPath);
+      try (InputStream inputStream = Files.newInputStream(outputPath)) {
         content = ByteString.readFrom(inputStream);
-        inputStream.close();
-      } catch (IOException ex) {
+      } catch (IOException e) {
         continue;
       }
+
       OutputFile.Builder outputFileBuilder = resultBuilder.addOutputFilesBuilder()
           .setPath(outputFile)
           .setIsExecutable(Files.isExecutable(outputPath));
@@ -195,7 +197,7 @@ public class ReportResultStage extends PipelineStage {
     }
 
     for (String outputDir : outputDirs) {
-      Path outputDirPath = root.resolve(outputDir);
+      Path outputDirPath = actionRoot.resolve(outputDir);
       if (!Files.exists(outputDirPath)) {
         continue;
       }
@@ -259,32 +261,35 @@ public class ReportResultStage extends PipelineStage {
           .setTreeDigest(treeDigest);
     }
 
+    workerContext.destroyActionRoot(actionRoot);
+
     /* put together our outputs and update the result */
     updateActionResultStdOutputs(resultBuilder, contents, inlineContentBytes);
 
     List<ByteString> blobs = contents.build();
     if (!blobs.isEmpty()) {
-      workerContext.getInstance().putAllBlobs(contents.build());
+      workerContext.getInstance().putAllBlobs(blobs);
     }
   }
 
   @Override
   protected OperationContext tick(OperationContext operationContext) throws InterruptedException {
-    final String operationName = operationContext.operation.getName();
+    ActionResult.Builder resultBuilder;
+    try {
+      resultBuilder = operationContext
+          .operation.getResponse().unpack(ExecuteResponse.class).getResult().toBuilder();
+    } catch (InvalidProtocolBufferException e) {
+      e.printStackTrace();
+      return null;
+    }
+
     Poller poller = workerContext.createPoller(
         "ReportResultStage",
         operationContext.operation.getName(),
         ExecuteOperationMetadata.Stage.EXECUTING,
         () -> {});
 
-    ActionResult.Builder resultBuilder;
-    try {
-      resultBuilder = operationContext
-          .operation.getResponse().unpack(ExecuteResponse.class).getResult().toBuilder();
-    } catch (InvalidProtocolBufferException ex) {
-      poller.stop();
-      return null;
-    }
+    long reportStartAt = System.nanoTime();
 
     try {
       uploadOutputs(
@@ -304,8 +309,19 @@ public class ReportResultStage extends PipelineStage {
       workerContext.getInstance().putActionResult(DigestUtil.asActionKey(operationContext.metadata.getActionDigest()), result);
     }
 
-    ExecuteOperationMetadata metadata = operationContext.metadata.toBuilder()
-        .setStage(ExecuteOperationMetadata.Stage.COMPLETED)
+    Duration reportedIn = Durations.fromNanos(System.nanoTime() - reportStartAt);
+
+    long completedAt = System.currentTimeMillis();
+
+    CompletedOperationMetadata metadata = CompletedOperationMetadata.newBuilder()
+        .setCompletedAt(completedAt)
+        .setExecutedOn(workerContext.getName())
+        .setFetchedIn(operationContext.fetchedIn)
+        .setExecutedIn(operationContext.executedIn)
+        .setReportedIn(reportedIn)
+        .setExecuteOperationMetadata(operationContext.metadata.toBuilder()
+            .setStage(ExecuteOperationMetadata.Stage.COMPLETED)
+            .build())
         .build();
 
     Operation operation = operationContext.operation.toBuilder()
@@ -319,23 +335,26 @@ public class ReportResultStage extends PipelineStage {
 
     poller.stop();
 
-    if (!workerContext.getInstance().putOperation(operation)) {
+    try {
+      if (!workerContext.putOperation(operation, operationContext.action)) {
+        return null;
+      }
+    } catch (IOException e) {
       return null;
     }
 
-    return new OperationContext(
-        operation,
-        operationContext.execDir,
-        metadata,
-        operationContext.action);
+    return operationContext.toBuilder()
+        .setMetadata(metadata.getExecuteOperationMetadata())
+        .build();
   }
 
   @Override
   protected void after(OperationContext operationContext) {
     try {
       workerContext.destroyActionRoot(operationContext.execDir);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
     } catch (IOException e) {
-      e.printStackTrace();
     }
   }
 }

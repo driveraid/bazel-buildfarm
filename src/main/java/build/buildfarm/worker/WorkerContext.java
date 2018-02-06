@@ -19,18 +19,22 @@ import build.buildfarm.instance.Instance;
 import build.buildfarm.v1test.CASInsertionPolicy;
 import com.google.devtools.remoteexecution.v1test.Action;
 import com.google.devtools.remoteexecution.v1test.Digest;
+import com.google.devtools.remoteexecution.v1test.Directory;
 import com.google.devtools.remoteexecution.v1test.ExecuteOperationMetadata.Stage;
 import com.google.longrunning.Operation;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Duration;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.function.Predicate;
 
 public interface WorkerContext {
+  String getName();
   Poller createPoller(String name, String operationName, Stage stage);
   Poller createPoller(String name, String operationName, Stage stage, Runnable onFailure);
   void match(Predicate<Operation> onMatch) throws InterruptedException;
+  void requeue(Operation operation) throws InterruptedException;
   CASInsertionPolicy getFileCasPolicy();
   CASInsertionPolicy getStdoutCasPolicy();
   CASInsertionPolicy getStderrCasPolicy();
@@ -38,7 +42,6 @@ public interface WorkerContext {
   int getInlineContentLimit();
   int getExecuteStageWidth();
   int getTreePageSize();
-  boolean getLinkInputDirectories();
   boolean hasDefaultActionTimeout();
   boolean hasMaximumActionTimeout();
   boolean getStreamStdout();
@@ -46,9 +49,10 @@ public interface WorkerContext {
   Duration getDefaultActionTimeout();
   Duration getMaximumActionTimeout();
   Instance getInstance();
-  ByteString getBlob(Digest digest);
-  void createActionRoot(Path root, Action action) throws IOException, InterruptedException;
-  void destroyActionRoot(Path root) throws IOException;
+  ByteString getBlob(Digest digest) throws InterruptedException, IOException;
+  void createActionRoot(Path root, Map<Digest, Directory> directoriesIndex, Action action) throws InterruptedException, IOException;
+  void destroyActionRoot(Path root) throws InterruptedException, IOException;
   Path getRoot();
   void removeDirectory(Path path) throws IOException;
+  boolean putOperation(Operation operation, Action action) throws IOException, InterruptedException;
 }

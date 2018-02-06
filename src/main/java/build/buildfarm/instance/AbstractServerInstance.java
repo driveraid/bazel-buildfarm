@@ -19,6 +19,7 @@ import build.buildfarm.common.ContentAddressableStorage.Blob;
 import build.buildfarm.common.DigestUtil;
 import build.buildfarm.common.DigestUtil.ActionKey;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
@@ -137,14 +138,16 @@ public abstract class AbstractServerInstance implements Instance {
         DigestUtil.toString(blobDigest));
   }
 
+  protected ByteString getBlob(Digest blobDigest, boolean forValidation) throws InterruptedException, IOException { return getBlob(blobDigest); }
+
   @Override
-  public ByteString getBlob(Digest blobDigest) {
+  public ByteString getBlob(Digest blobDigest) throws InterruptedException, IOException {
     return getBlob(blobDigest, 0, 0);
   }
 
   @Override
   public ByteString getBlob(Digest blobDigest, long offset, long limit)
-      throws IndexOutOfBoundsException {
+      throws InterruptedException, IOException, IndexOutOfBoundsException {
     Blob blob = contentAddressableStorage.get(blobDigest);
 
     if (blob == null) {
@@ -174,12 +177,13 @@ public abstract class AbstractServerInstance implements Instance {
   protected abstract int getTreeDefaultPageSize();
   protected abstract int getTreeMaxPageSize();
   protected abstract TokenizableIterator<Directory> createTreeIterator(
-      Digest rootDigest, String pageToken);
+      Digest rootDigest, String pageToken) throws InterruptedException, IOException;
 
   @Override
   public String getTree(
       Digest rootDigest, int pageSize, String pageToken,
-      ImmutableList.Builder<Directory> directories) {
+      ImmutableList.Builder<Directory> directories,
+      boolean acceptMissing) throws InterruptedException, IOException {
     if (pageSize == 0) {
       pageSize = getTreeDefaultPageSize();
     }
@@ -199,6 +203,9 @@ public abstract class AbstractServerInstance implements Instance {
         if (pageSize > 0) {
           pageSize--;
         }
+      } else if (!acceptMissing) {
+        // would be nice to have the digests...
+        throw new IOException("directory is missing");
       }
     }
     return iter.toNextPageToken();
@@ -247,10 +254,13 @@ public abstract class AbstractServerInstance implements Instance {
       Directory directory,
       Stack<Digest> path,
       Set<Digest> visited,
-      ImmutableSet.Builder<Digest> inputDigests) {
+      Map<Digest, Directory> directoriesIndex,
+      ImmutableSet.Builder<Digest> inputDigests) throws InterruptedException {
+    /*
     Preconditions.checkState(
         directory != null,
         MISSING_INPUT);
+    */
 
     Set<String> entryNames = new HashSet<>();
 
@@ -298,50 +308,113 @@ public abstract class AbstractServerInstance implements Instance {
       Digest directoryDigest = directoryNode.getDigest();
       if (!visited.contains(directoryDigest)) {
         path.push(directoryDigest);
-        validateActionInputDirectory(expectDirectory(directoryDigest), path, visited, inputDigests);
+        Directory subdirectory = directoriesIndex.get(directoryDigest);
+        Preconditions.checkState(
+            subdirectory != null,
+            MISSING_INPUT + " " + directoryName + " Directory [" + DigestUtil.toString(directoryDigest) + "]");
+        validateActionInputDirectory(subdirectory, path, visited, directoriesIndex, inputDigests);
         path.pop();
         visited.add(directoryDigest);
       }
     }
   }
 
-  private void validateActionInputs(Digest inputRootDigest, ImmutableSet.Builder<Digest> inputDigests) {
-    Stack<Digest> path = new Stack<>();
-    path.push(inputRootDigest);
+  protected Iterable<Directory> getTreeDirectories(Digest inputRoot) throws InterruptedException, IOException {
+    ImmutableList.Builder<Directory> directories = new ImmutableList.Builder<>();
 
-    Directory root = expectDirectory(inputRootDigest);
-    validateActionInputDirectory(root, path, new HashSet<>(), inputDigests);
+    TokenizableIterator<Directory> iterator = createTreeIterator(inputRoot, /* pageToken=*/ "");
+    while (iterator.hasNext()) {
+      Directory directory = iterator.next();
+      if (directory == null) {
+        throw new IOException("missing directory");
+      }
+      directories.add(directory);
+    }
+
+    return directories.build();
   }
 
-  protected void validateAction(Action action) {
-    Digest commandDigest = action.getCommandDigest();
-    ImmutableSet.Builder<Digest> inputDigests = new ImmutableSet.Builder<>();
-    inputDigests.add(commandDigest);
+  protected Map<Digest, Directory> createDirectoriesIndex(Iterable<Directory> directories) {
+    Set<Digest> directoryDigests = new HashSet<>();
+    ImmutableMap.Builder<Digest, Directory> directoriesIndex = new ImmutableMap.Builder<>();
+    for (Directory directory : directories) {
+      // double compute here...
+      Digest directoryDigest = digestUtil.compute(directory);
+      if (!directoryDigests.add(directoryDigest)) {
+        continue;
+      }
+      directoriesIndex.put(directoryDigest, directory);
+    }
 
-    validateActionInputs(action.getInputRootDigest(), inputDigests);
+    return directoriesIndex.build();
+  }
+
+  private void validateActionInputs(Digest inputRoot, Iterable<Directory> directories, ImmutableSet.Builder<Digest> inputDigests) throws InterruptedException {
+    Stack<Digest> path = new Stack<>();
+    path.push(inputRoot);
+
+    Map<Digest, Directory> directoriesIndex = createDirectoriesIndex(directories);
+
+    Directory root = directoriesIndex.get(inputRoot);
+    Preconditions.checkState(root != null, MISSING_INPUT + " Root Directory " + DigestUtil.toString(inputRoot));
+    validateActionInputDirectory(root, path, new HashSet<>(), directoriesIndex, inputDigests);
+  }
+
+  protected Iterable<Digest> findMissingBlobs(Iterable<Digest> blobDigests, boolean forValidation) { return findMissingBlobs(blobDigests); }
+
+  protected void validateAction(Action action) throws InterruptedException {
+    try {
+      validateAction(
+          action,
+          expectCommand(action.getCommandDigest()),
+          getTreeDirectories(action.getInputRootDigest()));
+    } catch (IOException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  protected void validateAction(Action action, Command command, Iterable<Directory> directories) throws InterruptedException {
+    Digest actionDigest = digestUtil.compute(action);
+    Digest commandDigest = action.getCommandDigest();
+    ImmutableSet.Builder<Digest> inputDigestsBuilder = new ImmutableSet.Builder<>();
+    inputDigestsBuilder.add(commandDigest);
+
+    long startTime = System.nanoTime();
+    validateActionInputs(action.getInputRootDigest(), directories, inputDigestsBuilder);
+    long endTime = System.nanoTime();
+    float ms = (endTime - startTime) / 1000000.0f;
+    System.out.println(String.format("AbstractServerInstance::validateAction(%s): validateActionInputs %gms", DigestUtil.toString(actionDigest), ms));
+
+    Preconditions.checkState(command != null, MISSING_INPUT + " Command " + DigestUtil.toString(commandDigest));
+
+    ImmutableSet<Digest> inputDigests = inputDigestsBuilder.build();
+    long sizeInBytes = 0;
+    for (Digest input : inputDigests) {
+      sizeInBytes += input.getSizeBytes();
+    }
+    String executable = "(unspecified)";
+    if (command.getArgumentsList().size() > 0) {
+      executable = command.getArgumentsList().get(0);
+    }
+    System.out.println(String.format("Action Input Size %d: %s", sizeInBytes, executable));
 
     // A requested input (or the [Command][] of the [Action][]) was not found in
     // the [ContentAddressableStorage][].
-    Iterable<Digest> missingBlobDigests = findMissingBlobs(inputDigests.build());
+    startTime = System.nanoTime();
+    Iterable<Digest> missingBlobDigests = findMissingBlobs(inputDigests, true);
+    endTime = System.nanoTime();
+    ms = (endTime - startTime) / 1000000.0f;
+    System.out.println(String.format("AbstractServerInstance::validateAction(%s): findMissingBlobs %gms", DigestUtil.toString(actionDigest), ms));
     if (!Iterables.isEmpty(missingBlobDigests)) {
       Preconditions.checkState(
           Iterables.isEmpty(missingBlobDigests),
-          MISSING_INPUT);
+          MISSING_INPUT + " " + Iterables.transform(missingBlobDigests, (digest) -> DigestUtil.toString(digest)));
     }
 
     // FIXME should input/output collisions (through directories) be another
     // invalid action?
     filesUniqueAndSortedPrecondition(action.getOutputFilesList());
     filesUniqueAndSortedPrecondition(action.getOutputDirectoriesList());
-    Command command;
-    try {
-      command = Command.parseFrom(getBlob(commandDigest));
-    } catch (InvalidProtocolBufferException ex) {
-      Preconditions.checkState(
-          false,
-          INVALID_DIGEST);
-      return;
-    }
     environmentVariablesUniqueAndSortedPrecondition(
         command.getEnvironmentVariablesList());
   }
@@ -352,7 +425,7 @@ public abstract class AbstractServerInstance implements Instance {
       boolean skipCacheLookup,
       int totalInputFileCount,
       long totalInputFileBytes,
-      Consumer<Operation> onOperation) {
+      Consumer<Operation> onOperation) throws InterruptedException {
     validateAction(action);
 
     ActionKey actionKey = digestUtil.computeActionKey(action);
@@ -422,31 +495,45 @@ public abstract class AbstractServerInstance implements Instance {
         operation.getMetadata().is(ExecuteOperationMetadata.class));
     try {
       return operation.getMetadata().unpack(ExecuteOperationMetadata.class);
-    } catch(InvalidProtocolBufferException ex) {
+    } catch(InvalidProtocolBufferException e) {
+      e.printStackTrace();
       return null;
     }
   }
 
-  protected Action expectAction(Operation operation) {
-    ByteString actionBlob = getBlob(
-        expectExecuteOperationMetadata(operation).getActionDigest());
-    if (actionBlob == null) {
-      return null;
-    }
+  protected Action expectAction(Operation operation) throws InterruptedException {
     try {
-      return Action.parseFrom(actionBlob);
-    } catch(InvalidProtocolBufferException ex) {
-      return null;
+      ByteString actionBlob = getBlob(
+          expectExecuteOperationMetadata(operation).getActionDigest(), false);
+      if (actionBlob != null) {
+        return Action.parseFrom(actionBlob);
+      }
+    } catch(IOException e) {
+      e.printStackTrace();
     }
+    return null;
   }
 
-  protected Directory expectDirectory(Digest directoryBlobDigest) {
+  protected Directory expectDirectory(Digest directoryBlobDigest) throws InterruptedException {
     try {
-      ByteString directoryBlob = getBlob(directoryBlobDigest);
+      ByteString directoryBlob = getBlob(directoryBlobDigest, true);
       if (directoryBlob != null) {
         return Directory.parseFrom(directoryBlob);
       }
-    } catch(InvalidProtocolBufferException ex) {
+    } catch(IOException e) {
+      e.printStackTrace();
+    }
+    return null;
+  }
+
+  protected Command expectCommand(Digest commandBlobDigest) throws InterruptedException {
+    try {
+      ByteString commandBlob = getBlob(commandBlobDigest, true);
+      if (commandBlob != null) {
+        return Command.parseFrom(commandBlob);
+      }
+    } catch(IOException e) {
+      e.printStackTrace();
     }
     return null;
   }
@@ -472,11 +559,11 @@ public abstract class AbstractServerInstance implements Instance {
         ExecuteOperationMetadata.Stage.COMPLETED;
   }
 
-  abstract protected boolean matchOperation(Operation operation);
+  abstract protected boolean matchOperation(Operation operation) throws InterruptedException;
   abstract protected void enqueueOperation(Operation operation);
 
   @Override
-  public boolean putOperation(Operation operation) {
+  public boolean putOperation(Operation operation) throws InterruptedException {
     if (isCancelled(operation)) {
       if (outstandingOperations.remove(operation.getName()) == null) {
         throw new IllegalStateException();
@@ -568,17 +655,30 @@ public abstract class AbstractServerInstance implements Instance {
   }
 
   @Override
-  public void cancelOperation(String name) {
+  public void cancelOperation(String name) throws InterruptedException {
     Operation operation = getOperation(name);
-    putOperation(operation.toBuilder()
+    if (operation == null) {
+      throw new IllegalStateException("Trying to cancel nonexistent operation [" + name + "]");
+    }
+    if (operation.getDone()) {
+      throw new IllegalStateException("Trying to cancel already completed operation [" + name + "]");
+    }
+    ExecuteOperationMetadata metadata = expectExecuteOperationMetadata(operation);
+    if (metadata == null) {
+      throw new IllegalStateException("Operation " + name + " did not contain valid metadata");
+    }
+    Operation.Builder builder = operation.toBuilder()
         .setDone(true)
+        .setMetadata(Any.pack(metadata.toBuilder()
+            .setStage(ExecuteOperationMetadata.Stage.COMPLETED)
+            .build()))
         .setError(com.google.rpc.Status.newBuilder()
-            .setCode(Code.CANCELLED.getNumber())
-            .build())
-        .build());
+            .setCode(com.google.rpc.Code.CANCELLED.getNumber())
+            .build());
+    putOperation(builder.build());
   }
 
-  protected void expireOperation(Operation operation) {
+  protected void expireOperation(Operation operation) throws InterruptedException {
     ActionResult actionResult = ActionResult.newBuilder()
         .setExitCode(-1)
         .setStderrRaw(ByteString.copyFromUtf8(
@@ -594,6 +694,9 @@ public abstract class AbstractServerInstance implements Instance {
     if (metadata == null) {
       throw new IllegalStateException("Operation " + operation.getName() + " did not contain valid metadata");
     }
+    metadata = metadata.toBuilder()
+        .setStage(ExecuteOperationMetadata.Stage.COMPLETED)
+        .build();
     putOperation(operation.toBuilder()
         .setDone(true)
         .setMetadata(Any.pack(metadata))

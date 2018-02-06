@@ -45,14 +45,17 @@ import com.google.devtools.remoteexecution.v1test.Action;
 import com.google.devtools.remoteexecution.v1test.Digest;
 import com.google.devtools.remoteexecution.v1test.Directory;
 import com.google.devtools.remoteexecution.v1test.DirectoryNode;
+import com.google.devtools.remoteexecution.v1test.ExecuteOperationMetadata;
 import com.google.devtools.remoteexecution.v1test.ExecuteOperationMetadata.Stage;
 import com.google.devtools.remoteexecution.v1test.FileNode;
 import com.google.longrunning.Operation;
 import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Duration;
+import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.TextFormat;
 import io.grpc.Channel;
+import io.grpc.ManagedChannel;
 import io.grpc.netty.NegotiationType;
 import io.grpc.netty.NettyChannelBuilder;
 import java.io.File;
@@ -85,7 +88,7 @@ public class Worker {
   private final ListeningScheduledExecutorService retryScheduler =
       MoreExecutors.listeningDecorator(Executors.newScheduledThreadPool(1));
 
-  private static Channel createChannel(String target) {
+  private static ManagedChannel createChannel(String target) {
     NettyChannelBuilder builder =
         NettyChannelBuilder.forTarget(target)
             .negotiationType(NegotiationType.PLAINTEXT);
@@ -140,16 +143,17 @@ public class Worker {
     HashFunction hashFunction = getValidHashFunction(config);
 
     /* initialization */
-    Channel channel = createChannel(config.getOperationQueue());
+    ManagedChannel channel = createChannel(config.getOperationQueue());
     instance = new StubInstance(
         config.getInstanceName(),
         new DigestUtil(hashFunction),
         channel,
         60 /* FIXME CONFIG */, TimeUnit.SECONDS,
+        createStubRetrier(),
         createStubUploader(channel));
     InputStreamFactory inputStreamFactory = new InputStreamFactory() {
       @Override
-      public InputStream newInput(Digest digest) {
+      public InputStream newInput(Digest digest) throws InterruptedException, IOException {
         return instance.newStreamInput(instance.getBlobName(digest));
       }
     };
@@ -170,7 +174,7 @@ public class Worker {
     String pageToken = "";
 
     do {
-      pageToken = instance.getTree(inputRoot, config.getTreePageSize(), pageToken, directories);
+      pageToken = instance.getTree(inputRoot, config.getTreePageSize(), pageToken, directories, /*acceptMissing=*/ false);
     } while (!pageToken.isEmpty());
 
     Set<Digest> directoryDigests = new HashSet<>();
@@ -244,6 +248,15 @@ public class Worker {
 
     WorkerContext workerContext = new WorkerContext() {
       @Override
+      public String getName() {
+        try {
+          return java.net.InetAddress.getLocalHost().getHostName();
+        } catch (java.net.UnknownHostException e) {
+          throw new RuntimeException(e);
+        }
+      }
+
+      @Override
       public Poller createPoller(String name, String operationName, Stage stage) {
         return createPoller(name, operationName, stage, () -> {});
       }
@@ -268,7 +281,31 @@ public class Worker {
 
       @Override
       public void match(Predicate<Operation> onMatch) throws InterruptedException {
-        instance.match(config.getPlatform(), config.getRequeueOnFailure(), onMatch);
+        instance.match(config.getPlatform(), onMatch);
+      }
+
+      @Override
+      public void requeue(Operation operation) throws InterruptedException {
+        try {
+          ExecuteOperationMetadata metadata =
+              operation.getMetadata().unpack(ExecuteOperationMetadata.class);
+
+          ExecuteOperationMetadata executingMetadata = metadata.toBuilder()
+              .setStage(ExecuteOperationMetadata.Stage.QUEUED)
+              .build();
+
+          operation = operation.toBuilder()
+              .setMetadata(Any.pack(executingMetadata))
+              .build();
+          instance.putOperation(operation);
+        } catch (InvalidProtocolBufferException e) {
+          e.printStackTrace();
+        }
+      }
+
+      @Override
+      public boolean putOperation(Operation operation, Action action) throws InterruptedException {
+        return instance.putOperation(operation);
       }
 
       @Override
@@ -299,11 +336,6 @@ public class Worker {
       @Override
       public int getTreePageSize() {
         return config.getTreePageSize();
-      }
-
-      @Override
-      public boolean getLinkInputDirectories() {
-        return config.getLinkInputDirectories();
       }
 
       @Override
@@ -342,12 +374,12 @@ public class Worker {
       }
 
       @Override
-      public ByteString getBlob(Digest digest) {
+      public ByteString getBlob(Digest digest) throws InterruptedException, IOException {
         return instance.getBlob(digest);
       }
 
       @Override
-      public void createActionRoot(Path root, Action action) throws IOException, InterruptedException {
+      public void createActionRoot(Path root, Map<Digest, Directory> directoriesIndex, Action action) throws IOException, InterruptedException {
         OutputDirectory outputDirectory = OutputDirectory.parse(
             action.getOutputFilesList(),
             action.getOutputDirectoriesList());
