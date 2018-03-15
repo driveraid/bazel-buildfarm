@@ -265,6 +265,7 @@ public class Worker {
       public Poller createPoller(String name, String operationName, Stage stage, Runnable onFailure) {
         Poller poller = new Poller(config.getOperationPollPeriod(), () -> {
               boolean success = instance.pollOperation(operationName, stage);
+              logInfo(name + ": poller: Completed Poll for " + operationName + ": " + (success ? "OK" : "Failed"));
               if (!success) {
                 onFailure.run();
               }
@@ -309,7 +310,12 @@ public class Worker {
       }
 
       @Override
-      public  int getInlineContentLimit() {
+      public void logInfo(String msg) {
+        logger.info(msg);
+      }
+
+      @Override
+      public int getInlineContentLimit() {
         return config.getInlineContentLimit();
       }
 

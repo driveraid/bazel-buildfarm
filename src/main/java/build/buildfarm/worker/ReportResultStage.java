@@ -164,6 +164,7 @@ public class ReportResultStage extends PipelineStage {
     for (String outputFile : outputFiles) {
       Path outputPath = actionRoot.resolve(outputFile);
       if (!Files.exists(outputPath)) {
+        workerContext.logInfo("ReportResultStage: " + outputPath + " does not exist...");
         continue;
       }
 
@@ -180,6 +181,7 @@ public class ReportResultStage extends PipelineStage {
       try (InputStream inputStream = Files.newInputStream(outputPath)) {
         content = ByteString.readFrom(inputStream);
       } catch (IOException e) {
+        e.printStackTrace();
         continue;
       }
 
@@ -199,6 +201,7 @@ public class ReportResultStage extends PipelineStage {
     for (String outputDir : outputDirs) {
       Path outputDirPath = actionRoot.resolve(outputDir);
       if (!Files.exists(outputDirPath)) {
+        workerContext.logInfo("ReportResultStage: " + outputDir + " does not exist...");
         continue;
       }
 
@@ -300,6 +303,7 @@ public class ReportResultStage extends PipelineStage {
     } catch (IOException e) {
       throw new IllegalStateException(e);
     } catch (StatusException e) {
+      e.printStackTrace();
       poller.stop();
       return null;
     }
@@ -340,6 +344,7 @@ public class ReportResultStage extends PipelineStage {
         return null;
       }
     } catch (IOException e) {
+      e.printStackTrace();
       return null;
     }
 
@@ -355,6 +360,7 @@ public class ReportResultStage extends PipelineStage {
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
     } catch (IOException e) {
+      e.printStackTrace();
     }
   }
 }

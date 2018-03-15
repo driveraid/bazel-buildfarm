@@ -433,6 +433,8 @@ public abstract class AbstractServerInstance implements Instance {
     ExecuteOperationMetadata metadata =
       expectExecuteOperationMetadata(operation);
 
+    System.out.println(System.nanoTime() + ": Operation " + operation.getName() + " was created");
+
     putOperation(operation);
 
     onOperation.accept(operation);

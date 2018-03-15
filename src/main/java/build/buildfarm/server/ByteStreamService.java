@@ -35,6 +35,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.logging.Level;
 
 public class ByteStreamService extends ByteStreamGrpc.ByteStreamImplBase {
   private static final long DEFAULT_CHUNK_SIZE = 1024 * 1024;
@@ -156,6 +157,11 @@ public class ByteStreamService extends ByteStreamGrpc.ByteStreamImplBase {
         readOperationStream(request, responseObserver);
         break;
       default:
+        BuildFarmServer.logger.log(
+            Level.INFO,
+            "ByteStreamServer:read "
+            + resourceName
+            + ": unknown resource type");
         String description = "Invalid service";
         responseObserver.onError(Status.INVALID_ARGUMENT.withDescription(description).asException());
         break;
@@ -188,6 +194,11 @@ public class ByteStreamService extends ByteStreamGrpc.ByteStreamImplBase {
       responseObserver.onError(Status.UNIMPLEMENTED.asException());
       break;
     default:
+      BuildFarmServer.logger.log(
+          Level.INFO,
+          "ByteStreamServer:query "
+          + resourceName
+          + ": unknown resource type");
       String description = "Invalid service";
       responseObserver.onError(Status.INVALID_ARGUMENT.withDescription(description).asException());
       break;
@@ -226,6 +237,11 @@ public class ByteStreamService extends ByteStreamGrpc.ByteStreamImplBase {
         if (data == null) {
           digest = UrlPath.parseUploadBlobDigest(writeResourceName, instance.getDigestUtil());
           if (digest == null) {
+            BuildFarmServer.logger.log(
+                Level.INFO,
+                "ByteStreamServer:write "
+                + writeResourceName
+                + ": invalid digest format");
             String description = "Could not parse digest of: " + writeResourceName;
             responseObserver.onError(new StatusException(Status.INVALID_ARGUMENT.withDescription(description)));
             failed = true;
@@ -237,6 +253,15 @@ public class ByteStreamService extends ByteStreamGrpc.ByteStreamImplBase {
           }
         }
         if (request.getWriteOffset() != committed_size) {
+          BuildFarmServer.logger.log(
+              Level.INFO,
+              "ByteStreamServer:"
+              + writeResourceName
+              + ": offset("
+              + request.getWriteOffset()
+              + ") != committed_size("
+              + committed_size
+              + ")");
           String description = "Write offset invalid: " + request.getWriteOffset();
           responseObserver.onError(new StatusException(Status.INVALID_ARGUMENT.withDescription(description)));
           failed = true;
@@ -255,6 +280,14 @@ public class ByteStreamService extends ByteStreamGrpc.ByteStreamImplBase {
           active_write_requests.remove(writeResourceName);
           Digest blobDigest = instance.getDigestUtil().compute(data);
           if (!blobDigest.equals(digest)) {
+            BuildFarmServer.logger.log(
+                Level.INFO,
+                "ByteStreamServer:"
+                + writeResourceName
+                + ": blobDigest("
+                + blobDigest.getHash()
+                + ") != "
+                + digest.getHash());
             String description = String.format("Digest mismatch %s <-> %s", DigestUtil.toString(blobDigest), DigestUtil.toString(digest));
             responseObserver.onError(new StatusException(Status.INVALID_ARGUMENT.withDescription(description)));
             failed = true;
@@ -299,6 +332,9 @@ public class ByteStreamService extends ByteStreamGrpc.ByteStreamImplBase {
           String resourceName = request.getResourceName();
           if (resourceName.isEmpty()) {
             if (writeResourceName == null) {
+              BuildFarmServer.logger.log(
+                  Level.INFO,
+                  "ByteStreamServer:write: resource name not specified on first write");
               String description = "Missing resource name in request";
               responseObserver.onError(new StatusException(Status.INVALID_ARGUMENT.withDescription(description)));
               failed = true;
@@ -308,6 +344,9 @@ public class ByteStreamService extends ByteStreamGrpc.ByteStreamImplBase {
           } else if (writeResourceName == null) {
             writeResourceName = resourceName;
           } else if (!writeResourceName.equals(resourceName)) {
+            BuildFarmServer.logger.log(
+                Level.INFO,
+                "ByteStreamServer:write: resource name does not match first request");
             String description = String.format("Previous resource name changed while handling request. %s -> %s", writeResourceName, resourceName);
             responseObserver.onError(Status.INVALID_ARGUMENT.withDescription(description).asException());
             failed = true;
@@ -342,6 +381,11 @@ public class ByteStreamService extends ByteStreamGrpc.ByteStreamImplBase {
             finished = request.getFinishWrite();
             break;
           default:
+            BuildFarmServer.logger.log(
+                Level.INFO,
+                "ByteStreamServer:write "
+                + writeResourceName
+                + ": unknown resource type");
             responseObserver.onError(Status.INVALID_ARGUMENT.asException());
             failed = true;
             break;

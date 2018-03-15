@@ -290,6 +290,7 @@ public final class ByteStreamUploader {
     overallUploadResult.addListener(
         () -> {
           if (overallUploadResult.isCancelled()) {
+            System.out.println("I AM CANCELLING THE NEWUPLOAD BECAUSE overallUploadResult.isCancelled()");
             newUpload.cancel();
           }
         },

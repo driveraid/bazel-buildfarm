@@ -545,6 +545,7 @@ public class Worker implements Instances {
                 e.printStackTrace();
               }
 
+              logInfo(name + ": poller: Completed Poll for " + operationName + ": " + (success ? "OK" : "Failed"));
               if (!success) {
                 onFailure.run();
               }
@@ -616,6 +617,11 @@ public class Worker implements Instances {
           }
         }
         */
+      }
+
+      @Override
+      public void logInfo(String msg) {
+        System.out.println(msg);
       }
 
       @Override

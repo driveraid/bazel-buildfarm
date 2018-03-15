@@ -46,7 +46,9 @@ class Executor implements Runnable {
     this.owner = owner;
   }
 
-  private void runInterruptible() throws InterruptedException {
+  private long runInterruptible() throws InterruptedException {
+    // workerContext.logInfo("Executor: Updating operation " + operationContext.operation.getName());
+
     ExecuteOperationMetadata executingMetadata = operationContext.metadata.toBuilder()
         .setStage(ExecuteOperationMetadata.Stage.EXECUTING)
         .build();
@@ -56,8 +58,9 @@ class Executor implements Runnable {
         .build();
 
     if (!workerContext.getInstance().putOperation(operation)) {
+      workerContext.logInfo("Executor: Operation " + operation.getName() + " is no longer valid");
       owner.error().put(operationContext);
-      return;
+      return 0;
     }
 
     final Thread executorThread = Thread.currentThread();
@@ -79,6 +82,8 @@ class Executor implements Runnable {
     }
 
     /* execute command */
+    workerContext.logInfo("Executor: Operation " + operation.getName() + " Executing command");
+
     long executeStartAt = System.nanoTime();
 
     ActionResult.Builder resultBuilder = ActionResult.newBuilder();
@@ -100,13 +105,16 @@ class Executor implements Runnable {
       }
       poller.stop();
       owner.error().put(operationContext);
-      return;
+      return 0;
     }
 
     Duration executedIn = Durations.fromNanos(System.nanoTime() - executeStartAt);
 
+    workerContext.logInfo("Executor: Operation " + operation.getName() + " Executed command: exit code " + resultBuilder.getExitCode());
+
     poller.stop();
 
+    long waitStartTime = System.nanoTime();
     if (owner.output().claim()) {
       operation = operation.toBuilder()
           .setResponse(Any.pack(ExecuteResponse.newBuilder()
@@ -122,14 +130,29 @@ class Executor implements Runnable {
           .build());
     } else {
       // FIXME we need to release the action root
+      workerContext.logInfo("Executor: Operation " + operation.getName() + " Failed to claim output");
+
       owner.error().put(operationContext);
     }
+    long waitTime = System.nanoTime() - waitStartTime;
+
+    return waitTime;
   }
 
   @Override
   public void run() {
+    long startTime = System.nanoTime();
+
+    long waitTime;
     try {
-      runInterruptible();
+      waitTime = runInterruptible();
+
+      long endTime = System.nanoTime();
+      workerContext.logInfo(String.format(
+          "Executor::run(%s): %gms (%gms wait)",
+          operationContext.operation.getName(),
+          (endTime - startTime) / 1000000.0f,
+          waitTime / 1000000.0f));
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
     } catch (Exception e) {
