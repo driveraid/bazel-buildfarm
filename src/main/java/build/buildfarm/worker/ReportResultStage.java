@@ -330,8 +330,9 @@ public class ReportResultStage extends PipelineStage {
   @Override
   protected void after(OperationContext operationContext) {
     try {
-      workerContext.removeDirectory(operationContext.execDir);
-    } catch (IOException ex) {
+      workerContext.destroyActionRoot(operationContext.execDir);
+    } catch (IOException e) {
+      e.printStackTrace();
     }
   }
 }

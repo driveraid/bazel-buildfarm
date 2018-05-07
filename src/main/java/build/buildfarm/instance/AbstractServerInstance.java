@@ -179,7 +179,7 @@ public abstract class AbstractServerInstance implements Instance {
     }
 
     TokenizableIterator<Directory> iter =
-      createTreeIterator(rootDigest, pageToken);
+        createTreeIterator(rootDigest, pageToken);
 
     while (iter.hasNext() && pageSize != 0) {
       Directory directory = iter.next();
