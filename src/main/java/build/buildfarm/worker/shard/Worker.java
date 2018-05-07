@@ -381,7 +381,7 @@ public class Worker implements Instances {
           Collections.shuffle(workersList, rand);
           workers = new ArrayDeque(workersList);
         } catch (IOException e) {
-          throw new StatusRuntimeException(Status.fromThrowable(e));
+          throw Status.fromThrowable(e).asRuntimeException();
         }
 
         for (String worker : workers) {
@@ -412,9 +412,9 @@ public class Worker implements Instances {
             }
           } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new StatusRuntimeException(Status.CANCELLED);
+            throw Status.CANCELLED.asRuntimeException();
           } catch (IOException e) {
-            throw new StatusRuntimeException(Status.INTERNAL.withDescription(e.getMessage()));
+            throw Status.INTERNAL.withDescription(e.getMessage()).asRuntimeException();
           } catch (StatusRuntimeException e) {
             if (e.getStatus().getCode().equals(Status.UNAVAILABLE.getCode())) {
               // removeMalfunctioningWorker(worker, e, "findMissingBlobs(...)");
@@ -797,7 +797,7 @@ public class Worker implements Instances {
     try {
       backplane.addBlobLocation(digest, config.getPublicName());
     } catch (IOException e) {
-      throw new StatusRuntimeException(Status.fromThrowable(e));
+      throw Status.fromThrowable(e).asRuntimeException();
     }
   }
 
@@ -805,7 +805,7 @@ public class Worker implements Instances {
     try {
       backplane.removeBlobsLocation(digests, config.getPublicName());
     } catch (IOException e) {
-      throw new StatusRuntimeException(Status.fromThrowable(e));
+      throw Status.fromThrowable(e).asRuntimeException();
     }
   }
 

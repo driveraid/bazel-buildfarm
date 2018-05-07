@@ -82,7 +82,7 @@ public class ShardWorkerInstance extends AbstractServerInstance {
     try {
       backplane.putActionResult(actionKey, actionResult);
     } catch (IOException e) {
-      throw new StatusRuntimeException(Status.fromThrowable(e));
+      throw Status.fromThrowable(e).asRuntimeException();
     }
   }
 
@@ -303,7 +303,7 @@ public class ShardWorkerInstance extends AbstractServerInstance {
     try {
       matchInterruptible(platform, onMatch);
     } catch (IOException e) {
-      throw new StatusRuntimeException(Status.fromThrowable(e));
+      throw Status.fromThrowable(e).asRuntimeException();
     }
   }
 
@@ -312,7 +312,7 @@ public class ShardWorkerInstance extends AbstractServerInstance {
     try {
       return backplane.putOperation(operation, expectExecuteOperationMetadata(operation).getStage());
     } catch (IOException e) {
-      throw new StatusRuntimeException(Status.fromThrowable(e));
+      throw Status.fromThrowable(e).asRuntimeException();
     }
   }
 

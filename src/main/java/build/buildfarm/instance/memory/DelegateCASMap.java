@@ -123,7 +123,7 @@ class DelegateCASMap<K,V extends Message> implements Map<K,V> {
   private V expectValueType(Digest valueDigest) {
     try {
       return parser.parseFrom(contentAddressableStorage.get(valueDigest).getData());
-    } catch (InvalidProtocolBufferException ex) {
+    } catch (InvalidProtocolBufferException e) {
       return null;
     }
   }
