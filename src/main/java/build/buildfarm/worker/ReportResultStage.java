@@ -34,6 +34,7 @@ import com.google.longrunning.Operation;
 import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
+import io.grpc.StatusException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.FileVisitResult;
@@ -154,7 +155,7 @@ public class ReportResultStage extends PipelineStage {
       Path root,
       Iterable<String> outputFiles,
       Iterable<String> outputDirs)
-      throws IOException, InterruptedException {
+      throws IOException, StatusException, InterruptedException {
     int inlineContentBytes = 0;
     ImmutableList.Builder<ByteString> contents = new ImmutableList.Builder<>();
     for (String outputFile : outputFiles) {
@@ -292,6 +293,8 @@ public class ReportResultStage extends PipelineStage {
           operationContext.action.getOutputFilesList(),
           operationContext.action.getOutputDirectoriesList());
     } catch (IOException ex) {
+      throw new IllegalStateException(ex);
+    } catch (StatusException e) {
       poller.stop();
       return null;
     }
