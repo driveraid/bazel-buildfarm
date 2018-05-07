@@ -101,7 +101,7 @@ public class ContentAddressableStorageService extends ContentAddressableStorageG
       return;
     } catch (InterruptedException ex) {
       responseObserver.onError(new StatusException(Status.fromThrowable(ex)));
-      Thread.currentThread().interrupt();
+      Thread.currentThread().interrupted();
       return;
     }
 
