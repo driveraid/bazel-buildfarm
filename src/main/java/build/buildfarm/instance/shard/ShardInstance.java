@@ -850,7 +850,7 @@ public class ShardInstance extends AbstractServerInstance {
     // make the action available to the worker
     try {
       putBlob(action.toByteString());
-    } catch (InterruptedException|StatusException e) {
+    } catch (StatusException e) {
       e.printStackTrace();
       return;
     }
