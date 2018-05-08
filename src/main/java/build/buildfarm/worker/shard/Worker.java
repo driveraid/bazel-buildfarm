@@ -333,11 +333,15 @@ public class Worker implements Instances {
       }
 
       public Poller createPoller(String name, String operationName, Stage stage, Runnable onFailure) {
-        return new Poller(null, null) {
-          @Override
-          public void stop() {
-          }
-        };
+        Poller poller = new Poller(config.getOperationPollPeriod(), () -> {
+              boolean success = backplane.pollOperation(operationName, stage);
+              if (!success) {
+                onFailure.run();
+              }
+              return success;
+            });
+        new Thread(poller).start();
+        return poller;
       }
 
       @Override
@@ -509,7 +513,7 @@ public class Worker implements Instances {
     }
   }
 
-  public void start() throws IOException {
+  public void start() {
     pipeline.start();
     try {
       fileCache.start();
